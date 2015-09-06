@@ -59,6 +59,8 @@ type Client interface {
 	// Errors:
 	// * Container not found.
 	Lookup(handle string) (Container, error)
+	
+	CommitAndSave(handle,dest string) error
 }
 
 type ContainerNotFoundError struct {

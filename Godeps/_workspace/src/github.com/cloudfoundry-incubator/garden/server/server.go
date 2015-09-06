@@ -99,6 +99,9 @@ func New(
 		routes.Property:               http.HandlerFunc(s.handleProperty),
 		routes.SetProperty:            http.HandlerFunc(s.handleSetProperty),
 		routes.RemoveProperty:         http.HandlerFunc(s.handleRemoveProperty),
+		
+		// add commit container diff and save image to tar interface, lvguanglin, 2015/7/8
+		routes.CommitAndSave:		   http.HandlerFunc(s.handleCommitAndSave),
 	}
 
 	mux, err := rata.NewRouter(routes.Routes, handlers)

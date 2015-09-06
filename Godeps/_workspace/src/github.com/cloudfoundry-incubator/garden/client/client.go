@@ -1,6 +1,7 @@
 package client
 
 import (
+	"fmt"
 	"github.com/cloudfoundry-incubator/garden"
 	"github.com/cloudfoundry-incubator/garden/client/connection"
 )
@@ -81,4 +82,8 @@ func (client *client) Lookup(handle string) (garden.Container, error) {
 	}
 
 	return nil, garden.ContainerNotFoundError{handle}
+}
+
+func (client *client) CommitAndSave(handle, dest string) error {
+	return fmt.Errorf("client doest not support CommitAndSave,handle : %s",handle)
 }

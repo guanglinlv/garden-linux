@@ -3,6 +3,9 @@ package repository_fetcher
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
+	"path/filepath"
+	"os"
 	"net/url"
 	"strings"
 	"sync"
@@ -12,12 +15,16 @@ import (
 	"github.com/cloudfoundry-incubator/garden-linux/process"
 	"github.com/docker/docker/image"
 	"github.com/docker/docker/pkg/archive"
+	"github.com/docker/docker/runconfig"
 	"github.com/docker/docker/registry"
+	"github.com/docker/docker/utils"
+	"github.com/pivotal-golang/clock"
 	"github.com/pivotal-golang/lager"
 )
 
 type RepositoryFetcher interface {
 	Fetch(logger lager.Logger, url *url.URL, tag string) (imageID string, envvars process.Env, volumes []string, err error)
+	FetcherCommitAndSaveRootFS(logger lager.Logger, id, imageID, dest string, layerData archive.ArchiveReader) error
 }
 
 // apes dockers registry.NewEndpoint
@@ -41,6 +48,8 @@ type Graph interface {
 	Get(name string) (*image.Image, error)
 	Exists(imageID string) bool
 	Register(image *image.Image, layer archive.ArchiveReader) error
+	Create(layerData archive.ArchiveReader, containerID, containerImage, comment, author string, containerConfig, config *runconfig.Config) (*image.Image, error)
+	Delete(name string) error
 }
 
 type DockerRepositoryFetcher struct {
@@ -49,6 +58,8 @@ type DockerRepositoryFetcher struct {
 
 	fetchingLayers map[string]chan struct{}
 	fetchingMutex  *sync.Mutex
+	
+	clock         clock.Clock
 }
 
 type dockerImage struct {
@@ -84,6 +95,7 @@ func New(registry RegistryProvider, graph Graph) RepositoryFetcher {
 		graph:            graph,
 		fetchingLayers:   map[string]chan struct{}{},
 		fetchingMutex:    new(sync.Mutex),
+		clock:			  clock.NewClock(),
 	}
 }
 
@@ -282,4 +294,246 @@ func filterEnv(env []string, logger lager.Logger) process.Env {
 		logger.Error("Invalid environment", err)
 	}
 	return filteredWithNoDups
+}
+
+func (fetcher *DockerRepositoryFetcher) FetcherTarImageLayer(logger lager.Logger, name string, dest io.Writer) error {
+	if img, err := fetcher.graph.Get(name); err == nil && img != nil {
+		fs, err := img.TarLayer()
+		if err != nil {
+			return err
+		}
+		defer fs.Close()
+
+		written, err := io.Copy(dest, fs)
+		if err != nil {
+			return err
+		}
+		//logrus.Debugf("rendered layer for %s of [%d] size", image.ID, written)
+		logger.Info("FetcherTarImageLayer", lager.Data{
+			"layer": img.ID,
+			"size":	written,
+		})
+		return nil
+	}
+	
+	return fmt.Errorf("No such image %s", name)
+}
+
+func (fetcher *DockerRepositoryFetcher) FetcherExportImage(logger lager.Logger, name, tempdir string) error {
+	for n := name; n != ""; {
+		// temporary directory
+		tmpImageDir := filepath.Join(tempdir, n)
+		if err := os.Mkdir(tmpImageDir, os.FileMode(0755)); err != nil {
+			if os.IsExist(err) {
+				return nil
+			}
+			return err
+		}
+
+		var version = "1.0"
+		var versionBuf = []byte(version)
+
+		if err := ioutil.WriteFile(filepath.Join(tmpImageDir, "VERSION"), versionBuf, os.FileMode(0644)); err != nil {
+			return err
+		}
+
+		// serialize json
+		json, err := os.Create(filepath.Join(tmpImageDir, "json"))
+		if err != nil {
+			return err
+		}
+		
+		image, err := fetcher.graph.Get(n)
+		if err != nil || image == nil {
+			return fmt.Errorf("No such image %s", n)
+		}
+		
+		imageInspectRaw, err := image.RawJson()
+		if err != nil {
+			return err
+		}
+		
+		written, err := json.Write(imageInspectRaw)
+		if err != nil {
+			return err
+		}
+		
+		if written != len(imageInspectRaw) {
+			//logrus.Warnf("%d byes should have been written instead %d have been written", written, len(imageInspectRaw))
+			logger.Error("image-json-write", nil, lager.Data{
+				"expect-written": written,
+				"actual-written": len(imageInspectRaw),
+			})
+		}
+
+		// serialize filesystem
+		fsTar, err := os.Create(filepath.Join(tmpImageDir, "layer.tar"))
+		if err != nil {
+			return err
+		}
+		if err := fetcher.FetcherTarImageLayer(logger, n, fsTar); err != nil {
+			return err
+		}
+
+		n = image.Parent
+	}
+	return nil	
+}
+
+func (fetcher *DockerRepositoryFetcher) FetcherDeleteImage(logger lager.Logger, name string) error {
+	var err error
+	maxAttempts := 10
+
+	for errorCount := 0; errorCount < maxAttempts; errorCount++ {
+		err = fetcher.graph.Delete(name)
+		if err == nil {
+			break
+		}
+
+		logger.Error("FetcherDeleteImage", err, lager.Data{
+			"imageID": name,
+			"current-attempts": errorCount + 1,
+			"max-attempts":     maxAttempts,
+		})
+		
+		fetcher.clock.Sleep(200 * time.Millisecond)
+	}
+	
+	return err
+}
+
+func (fetcher *DockerRepositoryFetcher) FetcherCreateImage(layerData archive.ArchiveReader, containerID, containerImage string) (*image.Image, error) {
+	parent_img, err := fetcher.graph.Get(containerImage)
+	if err != nil {
+		return nil, err
+	}
+	
+	// diff image config inherit from parent almost
+	img_config := parent_img.Config
+	img_config.Image = containerImage	// diff image's parent need to update
+	
+	img := &image.Image{
+		ID:            utils.GenerateRandomID(),
+		Comment:       parent_img.Comment,
+		Created:       time.Now().UTC(),
+		DockerVersion: parent_img.DockerVersion,
+		Author:        parent_img.Author,
+		Config:        img_config,
+		Architecture:  parent_img.Architecture,
+		OS:            parent_img.OS,
+	}
+
+	if containerID != "" {
+		img.Parent = containerImage
+		img.Container = containerID	// this we use garden container id ,any impact ?
+		img.ContainerConfig = *img_config	// just set the same as parent's config
+	}
+
+	if err := fetcher.graph.Register(img, layerData); err != nil {
+		return nil, err
+	}
+	return img, nil
+}
+
+/*******************************************************************************
+*      Func Name: FetcherCommitAndSaveRootFS
+*    Description: commit specify container diff and save image to tar
+*          Input: logger lager.Logger
+*				  id, container id
+*				  imageID, container parent image id
+*				  dest, save filepath must has suffix .tar
+*				  layerData, archive.ArchiveReader, diff layer data
+*          InOut: NA
+*         Output: NA
+*         Return: error
+*        Caution: NA
+*          Since: NA
+*      Reference: NA
+*         Depend: NA
+*------------------------------------------------------------------------------
+*    Modification History
+*    DATE                NAME                      DESCRIPTION
+*------------------------------------------------------------------------------
+*    2015/07/08       lvguanglin 00177705            Create
+*
+*******************************************************************************/
+func (fetcher *DockerRepositoryFetcher) FetcherCommitAndSaveRootFS(logger lager.Logger, id, imageID, dest string, layerData archive.ArchiveReader) error {
+	logger.Info("FetcherCommitAndSaveRootFS-START", lager.Data{
+		"container-id": id,
+		"parent-imageID": imageID,
+		"dest":	dest,
+	})
+	
+	if !strings.HasSuffix(dest, ".tar") {
+		return fmt.Errorf("specified %s must be has suffix .tar", dest)
+	}
+	
+	// check given dest is exist or not
+	if f, err := os.Stat(dest); err == nil {
+		if f.IsDir() {
+			return fmt.Errorf("specified %s exist and it is directory not file", dest)
+		}
+		// delete exist file
+		if err := os.Remove(dest); err != nil {
+			return fmt.Errorf("specified %s exist and delete failure due to %s", dest, err.Error())
+		}
+	}
+	
+	// commit diff as a new image
+	diff_img, err := fetcher.FetcherCreateImage(layerData,id,imageID)
+	if err != nil {
+		return err
+	}
+	
+	random := utils.GenerateRandomID()
+	shortLen := 12
+	if len(id) < shortLen {
+		shortLen = len(id)
+	}
+	random = random[:shortLen]
+	tempdir := filepath.Join("/var/vcap/data/", id, random, "garden-export-")
+	
+	// get image json
+	//tempdir, err := ioutil.TempDir("", "garden-export-")
+	if err := os.MkdirAll(tempdir, os.FileMode(0755)); err != nil {
+		fetcher.FetcherDeleteImage(logger, diff_img.ID)
+		return err
+	}
+	defer os.RemoveAll(filepath.Join("/var/vcap/data/", id))
+	
+	if err := fetcher.FetcherExportImage(logger, diff_img.ID, tempdir); err != nil {
+		logger.Error("export-image-fail", err, lager.Data{
+			"imageID": diff_img.ID,
+		})
+		fetcher.FetcherDeleteImage(logger, diff_img.ID)
+		return err
+	}
+	
+	fs, err := archive.Tar(tempdir, archive.Uncompressed)
+	if err != nil {
+		fetcher.FetcherDeleteImage(logger, diff_img.ID)
+		return err
+	}
+	defer fs.Close()
+	
+	destFsTar, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	
+	if _, err := io.Copy(destFsTar, fs); err != nil {
+		fetcher.FetcherDeleteImage(logger, diff_img.ID)
+		return err
+	}
+	
+	logger.Info("FetcherCommitAndSaveRootFS-END", lager.Data{
+		"container-id": id,
+		"parent-imageID": imageID,
+		"save-dest":	dest,
+	})
+	
+	// the diff commit image is not usefull in garden context any more
+	fetcher.FetcherDeleteImage(logger, diff_img.ID)
+	
+	return nil
 }

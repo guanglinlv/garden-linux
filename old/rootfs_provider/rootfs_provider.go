@@ -11,4 +11,5 @@ import (
 type RootFSProvider interface {
 	ProvideRootFS(logger lager.Logger, id string, rootfs *url.URL) (mountpoint string, envvar process.Env, err error)
 	CleanupRootFS(logger lager.Logger, id string) error
+	CommitAndSaveRootFS(logger lager.Logger, id, dest string) error
 }

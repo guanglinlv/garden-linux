@@ -825,6 +825,48 @@ func (p *LinuxContainerPool) releaseSystemResources(logger lager.Logger, id stri
 	return nil
 }
 
+/*******************************************************************************
+*      Func Name: CommitContainerAndSaveImage
+*    Description: commit specify container diff and save image to tar
+*          Input: id, container id
+*				  dest, save filepath must has suffix .tar
+*          InOut: NA
+*         Output: NA
+*         Return: error
+*        Caution: NA
+*          Since: NA
+*      Reference: NA
+*         Depend: NA
+*------------------------------------------------------------------------------
+*    Modification History
+*    DATE                NAME                      DESCRIPTION
+*------------------------------------------------------------------------------
+*    2015/07/08       lvguanglin 00177705            Create
+*
+*******************************************************************************/
+func (p *LinuxContainerPool) CommitContainerAndSaveImage(id, dest string) error {
+	pLog := p.logger.Session("CommitContainerAndSaveImage", lager.Data{"id": id})
+
+	pLog.Info("CommitContainerAndSaveImage-START")
+	
+	rootfsProvider, err := ioutil.ReadFile(path.Join(p.depotPath, id, "rootfs-provider"))
+	if err != nil {
+		rootfsProvider = []byte("")
+	}
+
+	provider, found := p.rootfsProviders[string(rootfsProvider)]
+	if !found {
+		return ErrUnknownRootFSProvider
+	}
+	
+	if err := provider.CommitAndSaveRootFS(pLog,id,dest); err != nil {
+		return err
+	}
+	
+	pLog.Info("CommitContainerAndSaveImage-END")
+	return nil
+}
+
 func getHandle(handle, id string) string {
 	if handle != "" {
 		return handle

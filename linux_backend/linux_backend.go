@@ -34,6 +34,7 @@ type ContainerPool interface {
 	Destroy(Container) error
 	Prune(keep map[string]bool) error
 	MaxContainers() int
+	CommitContainerAndSaveImage(id, dest string) error
 }
 
 type ContainerRepository interface {
@@ -172,6 +173,39 @@ func (b *LinuxBackend) Destroy(handle string) error {
 	}
 
 	b.containerRepo.Delete(container)
+
+	return nil
+}
+
+/*******************************************************************************
+*      Func Name: CommitAndSave
+*    Description: commit specify container diff and save image to tar
+*          Input: handle string
+*				  dest, save filepath must has suffix .tar
+*          InOut: NA
+*         Output: NA
+*         Return: error
+*        Caution: NA
+*          Since: NA
+*      Reference: NA
+*         Depend: NA
+*------------------------------------------------------------------------------
+*    Modification History
+*    DATE                NAME                      DESCRIPTION
+*------------------------------------------------------------------------------
+*    2015/07/08       lvguanglin 00177705            Create
+*
+*******************************************************************************/
+func (b *LinuxBackend) CommitAndSave(handle, dest string) error {
+	container, err := b.containerRepo.FindByHandle(handle)
+	if err != nil {
+		return err
+	}
+	
+	id := container.ID()
+	if err := b.containerPool.CommitContainerAndSaveImage(id,dest); err != nil {
+		return err
+	}
 
 	return nil
 }

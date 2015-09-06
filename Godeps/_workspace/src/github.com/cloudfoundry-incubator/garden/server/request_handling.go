@@ -1039,6 +1039,67 @@ func (s *GardenServer) handleBulkMetrics(w http.ResponseWriter, r *http.Request)
 	s.writeResponse(w, bulkMetrics)
 }
 
+/*******************************************************************************
+*      Func Name: handleCommitAndSave
+*    Description: handler for CommitAndSave
+*          Input: w, http.ResponseWriter
+*				  r, http.Request
+*          InOut: NA
+*         Output: NA
+*         Return: NONE
+*        Caution: NA
+*          Since: NA
+*      Reference: NA
+*         Depend: NA
+*------------------------------------------------------------------------------
+*    Modification History
+*    DATE                NAME                      DESCRIPTION
+*------------------------------------------------------------------------------
+*    2015/07/08       lvguanglin 00177705            Create
+*
+*******************************************************************************/
+func (s *GardenServer) handleCommitAndSave(w http.ResponseWriter, r *http.Request) {
+	handle := r.FormValue(":handle")
+	dstPath := r.URL.Query().Get("destination")
+	
+	hLog := s.logger.Session("commit-save", lager.Data{
+		"handle": handle,
+		"dstPath": dstPath,
+	})
+
+	if dstPath == "" {
+		err := fmt.Errorf("Must be specify destination to save commit image")
+		s.writeError(w, err, hLog)
+		return
+	}
+
+	container, err := s.backend.Lookup(handle)
+	if err != nil {
+		s.writeError(w, err, hLog)
+		return
+	}
+
+	s.bomberman.Pause(container.Handle())
+	defer s.bomberman.Unpause(container.Handle())
+	
+	hLog.Debug("commit-saving", lager.Data{
+		"dstPath": dstPath,
+	})
+
+	if err := s.backend.CommitAndSave(handle,dstPath); err != nil {
+		s.writeError(w, err, hLog)
+		return
+	}
+
+	hLog.Debug("commit-saved", lager.Data{
+		"dstPath": dstPath,
+	})
+
+	s.writeResponse(w, map[string]string{
+		"dstPath": dstPath,
+	})
+}
+
 func (s *GardenServer) writeError(w http.ResponseWriter, err error, logger lager.Logger) {
 	logger.Error("failed", err)
 

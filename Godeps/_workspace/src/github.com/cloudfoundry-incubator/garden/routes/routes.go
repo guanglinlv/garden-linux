@@ -46,6 +46,9 @@ const (
 	Metrics = "Metrics"
 
 	RemoveProperty = "RemoveProperty"
+	
+	// add commit container diff and save image to tar interface, lvguanglin, 2015/7/8
+	CommitAndSave = "CommitAndSave"
 )
 
 var Routes = rata.Routes{
@@ -91,4 +94,7 @@ var Routes = rata.Routes{
 	{Path: "/containers/:handle/properties/:key", Method: "DELETE", Name: RemoveProperty},
 
 	{Path: "/containers/:handle/metrics", Method: "GET", Name: Metrics},
+	
+	// add commit container diff and save image to tar interface, lvguanglin, 2015/7/8
+	{Path: "/containers/:handle/images", Method: "GET", Name: CommitAndSave},
 }

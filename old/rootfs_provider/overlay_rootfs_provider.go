@@ -80,3 +80,7 @@ func (provider *overlayRootFSProvider) CleanupRootFS(logger lager.Logger, id str
 
 	return pRunner.Run(destroyOverlay)
 }
+
+func (provider *overlayRootFSProvider) CommitAndSaveRootFS(logger lager.Logger, id, dest string) error {
+	return fmt.Errorf("Overlay rootfs provider does not support commitAndSave,id : %s",id)
+}
