@@ -1,7 +1,7 @@
 # Note
 
-1.Garden linux that support Direct Network configured and rootf save to tar archive.This should be worked with [Diego](https://github.com/guanglinlv/diego-release/tree/DNetAndRootFSSave)
-2.Support Centos 7.
+- 1.Garden linux that support Direct Network configured and rootf save to tar archive.This should be worked with [Diego](https://github.com/guanglinlv/diego-release/tree/DNetAndRootFSSave)
+- 2.Support Centos 7.
 
 # Garden Linux
 
