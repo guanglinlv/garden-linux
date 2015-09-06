@@ -24,7 +24,7 @@ then
   if [ -d $path ]
   then
     # Kill the container's init pid; the kernel will reap all tasks.
-    kill -9 $pid
+    kill -9 $pid || true
 
     # Wait while there are tasks in one of the instance's cgroups.
     #

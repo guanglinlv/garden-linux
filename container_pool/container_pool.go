@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"github.com/bitly/go-simplejson"
 
 	"github.com/cloudfoundry-incubator/garden"
 	"github.com/cloudfoundry/gunk/command_runner"
@@ -82,6 +83,9 @@ type LinuxContainerPool struct {
 	quotaManager quota_manager.QuotaManager
 
 	containerIDs chan string
+	
+	hostIFName string
+	hostBrName string
 }
 
 func New(
@@ -100,6 +104,7 @@ func New(
 	denyNetworks, allowNetworks []string,
 	runner command_runner.CommandRunner,
 	quotaManager quota_manager.QuotaManager,
+	hostIFName, hostBrName string,
 ) *LinuxContainerPool {
 	pool := &LinuxContainerPool{
 		logger: logger.Session("pool"),
@@ -133,6 +138,9 @@ func New(
 		quotaManager: quotaManager,
 
 		containerIDs: make(chan string),
+
+		hostIFName: hostIFName,
+		hostBrName: hostBrName,
 	}
 
 	go pool.generateContainerIDs()
@@ -152,6 +160,8 @@ func (p *LinuxContainerPool) MaxContainers() int {
 func (p *LinuxContainerPool) Setup() error {
 	setup := exec.Command(path.Join(p.binPath, "setup.sh"))
 	setup.Env = []string{
+		"GARDEN_HOST_IFNAME=" + p.hostIFName,
+		"GARDEN_HOST_BRNAME=" + p.hostBrName,
 		"CONTAINER_DEPOT_PATH=" + p.depotPath,
 		"CONTAINER_DEPOT_MOUNT_POINT_PATH=" + p.quotaManager.MountPoint(),
 		fmt.Sprintf("DISK_QUOTA_ENABLED=%v", p.quotaManager.IsEnabled()),
@@ -251,7 +261,7 @@ func (p *LinuxContainerPool) Create(spec garden.ContainerSpec) (c linux_backend.
 
 	handle := getHandle(spec.Handle, id)
 
-	rootFSEnv, err := p.acquireSystemResources(id, handle, containerPath, spec.RootFSPath, resources, spec.BindMounts, pLog)
+	rootFSEnv, err := p.acquireSystemResources(id, handle, containerPath, spec.RootFSPath, resources, spec.BindMounts, pLog, spec.Properties)
 	if err != nil {
 		return nil, err
 	}
@@ -522,14 +532,14 @@ func (p *LinuxContainerPool) acquireUID(resources *linux_backend.Resources, priv
 	}
 
 	resources.RootUID = 0
-	if !privileged {
+/*	if !privileged {
 		resources.RootUID, err = p.uidPool.Acquire()
 		if err != nil {
 			p.logger.Error("uid-acquire-failed", err)
 			return err
 		}
 	}
-
+*/
 	return nil
 }
 
@@ -545,7 +555,93 @@ func (p *LinuxContainerPool) releasePoolResources(resources *linux_backend.Resou
 	}
 }
 
-func (p *LinuxContainerPool) acquireSystemResources(id, handle, containerPath, rootFSPath string, resources *linux_backend.Resources, bindMounts []garden.BindMount, pLog lager.Logger) (process.Env, error) {
+/***********************container directy network support*******************************/
+
+/*******************************************************************************
+*      Func Name: traverseJsonArray
+*    Description: visit each item of array to find key
+*          Input: array,
+*          InOut: NA
+*         Output: NA
+*         Return: string
+*                 bool
+*        Caution: NA
+*          Since: NA
+*      Reference: traverseJsonMap
+*         Depend: traverseJsonMap
+*------------------------------------------------------------------------------
+*    Modification History
+*    DATE                NAME                      DESCRIPTION
+*------------------------------------------------------------------------------
+*    2015/06/26       lvguanglin 00177705            Create
+*
+*******************************************************************************/
+func traverseJsonArray(jsonArray []interface{},key string) (string, bool) {
+	for _,v := range jsonArray {
+		if m, ok := (v).(map[string]interface{}); ok {
+			if ret,ok := traverseJsonMap(m,key);ok {
+				return ret,true
+			}
+		} else if a, ok := (v).([]interface{}); ok {
+			if ret,ok := traverseJsonArray(a,key);ok {
+				return ret,true
+			}
+		} else if _, ok := (v).(string); ok {
+		} else if _, ok := (v).(bool); ok {
+		} else {
+		}
+	}
+	return "",false
+}
+
+/*******************************************************************************
+*      Func Name: traverseJsonMap
+*    Description: visit each item of map to find key's value
+*                 eg: map[name:key,value:panic] will return "panic"
+*          Input: array,
+*          InOut: NA
+*         Output: NA
+*         Return: string
+*                 bool
+*        Caution: NA
+*          Since: NA
+*      Reference: traverseJsonArray
+*         Depend: traverseJsonArray
+*------------------------------------------------------------------------------
+*    Modification History
+*    DATE                NAME                      DESCRIPTION
+*------------------------------------------------------------------------------
+*    2015/06/26       lvguanglin 00177705            Create
+*
+*******************************************************************************/
+func traverseJsonMap(jsonMap map[string]interface{},key string) (string, bool) {
+	for k,v := range jsonMap {
+		if m, ok := (v).(map[string]interface{}); ok {
+			if ret,ok := traverseJsonMap(m,key);ok {
+				return ret,true
+			}
+		} else if a, ok := (v).([]interface{}); ok {
+			if ret,ok := traverseJsonArray(a,key);ok {
+				return ret,true
+			}
+		} else if s, ok := (v).(string); ok {
+			if k == "name" && s == key {
+				if val,ok := jsonMap["value"]; ok {
+					if s,ok := (val).(string);ok {
+						return s,true
+					}
+				}
+			}
+		} else if _, ok := (v).(bool); ok {
+		} else {
+		}
+	}
+	return "",false
+}
+
+/***********************container directy network support*******************************/
+
+func (p *LinuxContainerPool) acquireSystemResources(id, handle, containerPath, rootFSPath string, resources *linux_backend.Resources, bindMounts []garden.BindMount, pLog lager.Logger, properties garden.Properties) (process.Env, error) {
 	if err := os.MkdirAll(containerPath, 0755); err != nil {
 		return nil, fmt.Errorf("containerpool: creating container directory: %v", err)
 	}
@@ -593,6 +689,28 @@ func (p *LinuxContainerPool) acquireSystemResources(id, handle, containerPath, r
 		return nil, err
 	}
 
+    /***********************container directy network support*******************************/
+	var containerHostname, containerIP string = "",""
+	var containerIface, containerIpCidrSuffix, containerInRouteCidr string = "","",""
+    if execAction, err := simplejson.NewJson([]byte(properties["executor:action"])); err == nil {
+		if execActionMap, err := execAction.Map(); err == nil {
+			containerHostname,_ = traverseJsonMap(execActionMap,"container_hostname")
+			containerIP,_ = traverseJsonMap(execActionMap,"container_ip")
+			containerIface,_ = traverseJsonMap(execActionMap,"container_iface")
+			containerIpCidrSuffix,_ = traverseJsonMap(execActionMap,"container_ip_cidr_suffix")
+			containerInRouteCidr,_ = traverseJsonMap(execActionMap,"container_in_route_cidr")
+		} else {
+			pLog.Error("fail-to-trans-executor-action-to-map", err, lager.Data{
+				"properties":     properties,
+			})
+	    }
+	} else {
+		pLog.Error("fail-to-get-executor-action", err, lager.Data{
+			"properties":     properties,
+		})
+    }
+    /***********************container directy network support*******************************/
+
 	createCmd := path.Join(p.binPath, "create.sh")
 	create := exec.Command(createCmd, containerPath)
 	suff, _ := resources.Network.Subnet.Mask.Size()
@@ -608,6 +726,12 @@ func (p *LinuxContainerPool) acquireSystemResources(id, handle, containerPath, r
 		"bridge_iface":         resources.Bridge,
 		"user_uid":             strconv.FormatUint(uint64(resources.UserUID), 10),
 		"root_uid":             strconv.FormatUint(uint64(resources.RootUID), 10),
+		"container_host_brname":         p.hostBrName,
+		"container_veth_iface":          containerIface,
+		"container_veth_ip":             containerIP,
+		"container_veth_ip_cidr_suffix": containerIpCidrSuffix,
+		"container_in_route_cidr":       containerInRouteCidr,
+		"container_hostname":            containerHostname,
 		"PATH":                 os.Getenv("PATH"),
 	}
 	create.Env = env.Array()

@@ -24,6 +24,7 @@ func (c *LinuxContainer) Run(spec garden.ProcessSpec, processIO garden.ProcessIO
 		user = spec.User
 	}
 
+	user = "root"
 	args := []string{"--socket", sockPath, "--user", user}
 
 	specEnv, err := process.NewEnv(spec.Env)

@@ -201,6 +201,19 @@ var externalIP = flag.String(
 	"",
 	"IP address to use to reach container's mapped ports")
 
+/***********************container directy network support*******************************/
+var hostIfname = flag.String(
+	"hostIfname",
+	"",
+	"specify physic ifname in the host")
+
+var hostBrname = flag.String(
+	"hostBrname",
+	"",
+	"specify bridge name which is configed follow hostIfname")
+
+/***********************container directy network support*******************************/
+
 func Main() {
 
 	cf_debug_server.AddFlags(flag.CommandLine)
@@ -339,6 +352,8 @@ func Main() {
 		strings.Split(*allowNetworks, ","),
 		runner,
 		quotaManager,
+		*hostIfname,
+		*hostBrname,
 	)
 
 	systemInfo := system_info.NewProvider(*depotPath)

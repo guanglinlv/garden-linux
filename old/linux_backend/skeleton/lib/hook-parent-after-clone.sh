@@ -81,4 +81,9 @@ done
 
 echo $PID > ./run/wshd.pid
 
+#set noclobber off to permit overwrite exist file
+set +o noclobber > /dev/null 2>&1
+
+echo "container_pid=$PID" >> etc/config
+
 exit 0

@@ -24,6 +24,18 @@ user_uid=${user_uid:-10000}
 root_uid=${root_uid:-10000}
 rootfs_path=$(readlink -f $rootfs_path)
 
+container_host_brname=${container_host_brname:-}
+container_veth_iface=${container_veth_iface:-eth1}
+container_veth_ip=${container_veth_ip:-}
+container_veth_ip_cidr_suffix=${container_veth_ip_cidr_suffix:-24}
+container_in_route_cidr=${container_in_route_cidr:-10.0.0.0/8}
+
+container_hostname=${container_hostname:-}
+
+[ -z $container_hostname ] && {
+	container_hostname=$id
+} || true #just in case
+
 if [ ! -d $rootfs_path/tmp ]; then
   mkdir $rootfs_path/tmp
 fi
@@ -49,6 +61,12 @@ root_uid=$root_uid
 user_uid=$user_uid
 rootfs_path=$rootfs_path
 external_ip=$external_ip
+container_host_brname=$container_host_brname
+container_veth_iface=$container_veth_iface
+container_veth_ip=$container_veth_ip
+container_veth_ip_cidr_suffix=$container_veth_ip_cidr_suffix
+container_in_route_cidr=$container_in_route_cidr
+container_hostname=$container_hostname
 EOS
 
 if [ ! -d $rootfs_path/proc ]; then
@@ -105,13 +123,22 @@ chown $root_uid:$root_uid $rootfs_path/dev/fuse
 chmod ugo+rw $rootfs_path/dev/fuse
 
 cat > $rootfs_path/etc/hostname <<-EOS
-$id
+$container_hostname
 EOS
 
 cat > $rootfs_path/etc/hosts <<-EOS
 127.0.0.1 localhost
-$network_container_ip $id
 EOS
+
+#set noclobber off to permit overwrite exist file
+set +o noclobber > /dev/null 2>&1
+
+# ignore network_container_ip if container_veth_ip is sepcified
+if [ -z $container_veth_ip ]; then
+	echo "$network_container_ip $container_hostname" >> $rootfs_path/etc/hosts
+else
+	echo "$container_veth_ip $container_hostname" >> $rootfs_path/etc/hosts
+fi
 
 # By default, inherit the nameserver from the host container.
 #
@@ -134,6 +161,7 @@ fi
 
 
 # Add vcap user if not already present
+# must have vcap user because for rootfs_cflinuxfs2 /etc/seed
 if ! chroot $rootfs_path id vcap >/dev/null 2>&1; then
   mkdir -p $rootfs_path/home
 
@@ -147,9 +175,9 @@ if ! chroot $rootfs_path id vcap >/dev/null 2>&1; then
   useradd -R $rootfs_path -m -u $user_uid -s $shell vcap
 fi
 
-# workaround aufs limitations by copying /root directory out and back
-# in order to get it a new inode. This is the only way to prevent the
-# ownership in the read-only layer affecting the read-write layer. Later
+# workaround aufs limitations by copying /root directory out and back
+# in order to get it a new inode. This is the only way to prevent the
+# ownership in the read-only layer affecting the read-write layer. Later
 # versions of aufs support a dirperm1 mount option which should allow us
 # to remove this workaround.
 rm -rf "$rootfs_path/tmp/root" || true # just in case

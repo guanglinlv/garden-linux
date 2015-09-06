@@ -23,3 +23,5 @@ then
 else
   ./bin/wshd --run ./run --lib ./lib --root $rootfs_path --title "wshd: $id" --userns enabled
 fi
+
+./bridge.sh setup
